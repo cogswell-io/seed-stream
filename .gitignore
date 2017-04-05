@@ -9,5 +9,6 @@
 /deploy/
 /.cache-*
 /bin/io
+/bin/com
 /bin/*.class
 .project
