@@ -18,8 +18,30 @@ import java.time.format.DateTimeFormatterBuilder
 import java.time.ZonedDateTime
 import java.time.ZoneId
 
-case class Station(network: String, name: String)
-case class Feed(station: Station, selectors: Seq[String])
+sealed abstract class InfoLevel(val level: String)
+case object IdInfo extends InfoLevel("ID")
+case object CapabilitiesInfo extends InfoLevel("CAPABILITIES")
+case object StationsInfo extends InfoLevel("STATIONS")
+case object StreamsInfo extends InfoLevel("STREAMS")
+case object GapsInfo extends InfoLevel("GAPS")
+case object ConnectionsInfo extends InfoLevel("CONNECTIONS")
+case object AllInfo extends InfoLevel("ALL")
+
+sealed abstract class Command(val cmd: String) {
+  val SEP = "\r\n"
+  def command = s"$cmd$SEP"
+}
+case object Hello extends Command("HELLO")
+case object Cat extends Command("CAT")
+case object Data extends Command("DATA")
+case object End extends Command("END")
+case class Info(level: InfoLevel) extends Command(s"INFO ${level.level}")
+case class Select(pattern: String) extends Command(s"SELECT $pattern")
+case class Station(network: String, name: String) extends Command(s"STATION $name $network")
+
+case class Feed(station: Station, pattern: String) {
+  val selector: Select = Select(pattern)
+}
 
 object Main extends App {
   def timestamp = ZonedDateTime.now()
@@ -30,29 +52,31 @@ object Main extends App {
     println(s"[$timestamp] $message")
   }
   
-  
   def seedStream(): Unit = {
     implicit val system = ActorSystem()
     import system.dispatcher
     implicit val materializer = ActorMaterializer()
     
-    val SEP = "\r\n"
+    /*
+    val feeds: List[Feed] = Feed(Station("IU", "ADK"), "BH?") ::
+      Feed(Station("IU", "COLA"), "BH?") ::
+      Feed(Station("IU", "COR"), "BH?") ::
+      Feed(Station("IU", "ANMO"), "BH?") ::
+      Nil
+    //  */
     
-    val feeds = Seq(
-      //Feed(Station("IU", "ADK"), Seq("BH?")),
-      Feed(Station("IU", "COLA"), Seq("BH?")),
-      Feed(Station("IU", "COR"), Seq("BH?")),
-      Feed(Station("IU", "ANMO"), Seq("BH?"))
-    )
+    val feeds: List[Feed] = Nil
     
-    val commands: Seq[String] = feeds.flatMap { case Feed(Station(name, network), selectors) =>
-      s"STATION $name $network" +: selectors.map(s => s"SELECT $s")
-    } :+ "END"
-    
-    log(s"Commands:\n${commands.mkString("\n")}")
+    val commands: List[Command] = if (feeds.isEmpty) {
+        Hello :: Select("BH?") :: Data :: Cat :: Info(AllInfo) :: Nil
+      } else {
+        Hello +: feeds.flatMap { feed =>
+          feed.station :: feed.selector :: Data :: Nil
+        } :+ Cat :+ Info(AllInfo) :+ End
+      }
     
     val handshake = commands map { command =>
-      (ByteString(s"$command$SEP"), Promise[ByteString])
+      (command, Promise[Command])
     } toList
     
     val commandIterator = handshake.iterator
@@ -73,31 +97,59 @@ object Main extends App {
     
     // Handshake commands out-bound to the server.
     val source = Source(handshake)
-        .mapAsync[ByteString](1)(_._2.future)
+        .mapAsync[Command](1)(_._2.future)
         .map { cmd =>
-          log(s"Sending command: ${cmd.decodeString("UTF-8")}")
-          cmd
+          log(s"Sending command: ${cmd.cmd}")
+          ByteString(cmd.command)
         }
     
     // Records in-bound from the server.
     val flow = Flow[ByteString]
-        .map(record => (record.length, record.decodeString("ascii"), record))
+        .map[(Int, Option[String], ByteString)] { record =>
+          if (record.length < 512) {
+            try {
+              (record.length, Some(record.decodeString("ascii")), record)
+            } catch {
+              case cause: Throwable => {
+                println(s"Error parsing non data record: $cause")
+                (record.length, None, record)
+              }
+            }
+          } else {
+            (record.length, None, record)
+          }
+        }
     
     val sink = flow
-        .to(Sink.foreach { case (len, decoded, raw) =>
-          if (decoded startsWith "ERROR") {
-            // Handle an error with handshake commands
-            log("Command rejected [ERROR]")
-            nextCommand(Some(new Exception("Server rejected command.")))
-          } else if (decoded startsWith "OK") {
+        .to(Sink.foreach {
+          case (len, None, record) => {
             // Make sure all of the commands sent sequentially
-            log("Command accepted [OK]")
+            log(s"Received $len byte record\n$record")
             nextCommand(None)
-          } else {
-            // Process the record feed
-            log("Processing a record")
-            val recordSummary = if (len <= 40) s":\n$raw\n$decoded" else ""
-            log(s"Received $len byte record${recordSummary}")
+          }
+          case (len, Some(decoded), raw) => {
+            if (decoded startsWith "SLINFO") {
+              // Process the feed record
+              log(s"Received info record")
+            } else if (decoded startsWith "SL") {
+              // Process the feed record
+              log(s"Processing record ${decoded.substring(2, 8)}")
+              val recordSummary = if (len <= 40) s":\n$raw\n$decoded" else ""
+              log(s"Received $len byte record${recordSummary}")
+            } else if (decoded startsWith "ERROR") {
+              // Handle an error with handshake commands
+              log("Command rejected [ERROR]")
+              nextCommand(Some(new Exception("Server rejected command.")))
+            } else if (decoded startsWith "OK") {
+              // Make sure all of the commands sent sequentially
+              log("Command accepted [OK]")
+              nextCommand(None)
+            } else {
+              // Make sure all of the commands sent sequentially
+              val recordSummary = if (len <= 256) s":\n$decoded" else ""
+              log(s"Received $len byte response$recordSummary")
+              nextCommand(None)
+            }
           }
         })
         
