@@ -57,7 +57,8 @@ object Main extends App {
     import system.dispatcher
     implicit val materializer = ActorMaterializer()
     
-    /*
+    // Target just a few stations
+    //*
     val feeds: List[Feed] = Feed(Station("IU", "ADK"), "BH?") ::
       Feed(Station("IU", "COLA"), "BH?") ::
       Feed(Station("IU", "COR"), "BH?") ::
@@ -65,7 +66,8 @@ object Main extends App {
       Nil
     //  */
     
-    val feeds: List[Feed] = Nil
+    // The firehose (all stations)
+    //val feeds: List[Feed] = Nil
     
     val commands: List[Command] = if (feeds.isEmpty) {
         Hello :: Select("BH?") :: Data :: Cat :: Info(AllInfo) :: Nil
@@ -96,12 +98,13 @@ object Main extends App {
     nextCommand(None)
     
     // Handshake commands out-bound to the server.
-    val source = Source(handshake)
+    val source = Source.maybe[ByteString]
+    .prepend(Source(handshake)
         .mapAsync[Command](1)(_._2.future)
         .map { cmd =>
           log(s"Sending command: ${cmd.cmd}")
           ByteString(cmd.command)
-        }
+        })
     
     // Records in-bound from the server.
     val flow = Flow[ByteString]
@@ -115,13 +118,18 @@ object Main extends App {
                 (record.length, None, record)
               }
             }
+          } else if (record.length > 512) {
+            // TODO: really need to handle sizes of 512, 520, or multiples of
+            //       these, and split them up into sub-records.
+            (record.length, None, record)
           } else {
             (record.length, None, record)
           }
         }
-    
+
+        
     val sink = flow
-        .to(Sink.foreach {
+        .toMat(Sink.foreach {
           case (len, None, record) => {
             // Make sure all of the commands sent sequentially
             log(s"Received $len byte record\n$record")
@@ -151,11 +159,18 @@ object Main extends App {
               nextCommand(None)
             }
           }
-        })
+        })((_, end) => end)
         
     val connection = Tcp().outgoingConnection("rtserve.iris.washington.edu", 18000)
     
-    connection.runWith(source, sink)
+    val (start, end) = connection.runWith(source, sink)
+    
+    end.andThen {
+      case Success(_) => println("Stream ended normally.")
+      case Failure(error) => println(s"Stream ended in error: $error")
+    }
+    
+    println("Not sure if done, or just in different thread...")
   }
   
   seedStream()
