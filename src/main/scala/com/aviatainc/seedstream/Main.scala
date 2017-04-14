@@ -99,7 +99,7 @@ object Main extends App {
     
     // Handshake commands out-bound to the server.
     val source = Source.maybe[ByteString]
-    .prepend(Source(handshake)
+        .prepend(Source(handshake)
         .mapAsync[Command](1)(_._2.future)
         .map { cmd =>
           log(s"Sending command: ${cmd.cmd}")
@@ -126,8 +126,7 @@ object Main extends App {
             (record.length, None, record)
           }
         }
-
-        
+    
     val sink = flow
         .toMat(Sink.foreach {
           case (len, None, record) => {
@@ -166,11 +165,11 @@ object Main extends App {
     val (start, end) = connection.runWith(source, sink)
     
     end.andThen {
-      case Success(_) => println("Stream ended normally.")
-      case Failure(error) => println(s"Stream ended in error: $error")
+      case Success(_) => log("Stream ended normally.")
+      case Failure(error) => log(s"Stream ended in error: $error")
     }
     
-    println("Not sure if done, or just in different thread...")
+    log("Not sure if done, or just in different thread...")
   }
   
   seedStream()
