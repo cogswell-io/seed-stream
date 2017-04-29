@@ -5,18 +5,17 @@ import akka.util.ByteString
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.Source
 import akka.stream.scaladsl.Tcp
+
 import scala.util.Failure
 import scala.util.Success
-import akka.stream.scaladsl.Framing
 import akka.stream.scaladsl.Flow
 import akka.stream.scaladsl.Sink
-import scala.concurrent.Future
+
 import scala.concurrent.Promise
 import java.time.format.DateTimeFormatter
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatterBuilder
-import java.time.ZonedDateTime
-import java.time.ZoneId
+import java.time.{Instant, ZoneId, ZonedDateTime}
+
+import seed.MiniSeed
 
 sealed abstract class InfoLevel(val level: String)
 case object IdInfo extends InfoLevel("ID")
@@ -44,12 +43,49 @@ case class Feed(station: Station, pattern: String) {
 }
 
 object Main extends App {
-  def timestamp = ZonedDateTime.now()
-      .withZoneSameInstant(ZoneId.of("UTC"))
-      .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+  type Network = String
+  type Station = String
+  type Sensor = String
+  type Channel = String
+  type Rate = Double
+  type Timestamp = Long
+  type Displacement = Int
+  type SeedPoint = (Network, Station, Sensor, Channel, Rate, Timestamp, Displacement)
   
+  def decomposeMiniSeed(rawRecord: Array[Byte]): List[SeedPoint] = {
+    // TODO: decompose
+    try {
+      val record = new MiniSeed(rawRecord)
+      val seedName = record.getSeedName
+      val network = seedName.substring(0, 2).trim
+      val station = seedName.substring(2, 7).trim
+      val channel = seedName.substring(7, 10).trim
+      val location = seedName.substring(10, 12).trim
+      val cal = record.getGregorianCalendar
+      val timestamp = cal.getTimeInMillis
+      val rate = record.getRate
+      val step = (1000 / rate).toLong
+      log(s"${new String(rawRecord.slice(0, 32))} : [$timestamp] $rate")
+      record.decomp.toList.zipWithIndex.map { case (displacement, index) =>
+        (network, station, location, channel, rate, timestamp + (step * index), displacement)
+      }
+    } catch {
+      case t: Throwable => {
+        //log(s"Invalid record: ${rawRecord.slice(0, 12)} : $t")
+        //("XX", "FAIL", "00", "BAD", System.currentTimeMillis(), 0L) :: Nil
+        Nil
+      }
+    }
+  }
+
+  def formatTime(time: Long): String = ZonedDateTime
+      .ofInstant(Instant.ofEpochMilli(time), ZoneId.of("UTC"))
+      .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+
+  def currentTime = formatTime(System.currentTimeMillis)
+
   def log(message: String): Unit = {
-    println(s"[$timestamp] $message")
+    println(s"[$currentTime] $message")
   }
   
   def seedStream(): Unit = {
@@ -58,7 +94,7 @@ object Main extends App {
     implicit val materializer = ActorMaterializer()
     
     // Target just a few stations
-    //*
+    /*
     val feeds: List[Feed] = Feed(Station("IU", "ADK"), "BH?") ::
       Feed(Station("IU", "COLA"), "BH?") ::
       Feed(Station("IU", "COR"), "BH?") ::
@@ -67,7 +103,7 @@ object Main extends App {
     //  */
     
     // The firehose (all stations)
-    //val feeds: List[Feed] = Nil
+    val feeds: List[Feed] = Nil
     
     val commands: List[Command] = if (feeds.isEmpty) {
         Hello :: Select("BH?") :: Data :: Cat :: Info(AllInfo) :: Nil
@@ -79,7 +115,7 @@ object Main extends App {
     
     val handshake = commands map { command =>
       (command, Promise[Command])
-    } toList
+    }
     
     val commandIterator = handshake.iterator
     
@@ -99,12 +135,14 @@ object Main extends App {
     
     // Handshake commands out-bound to the server.
     val source = Source.maybe[ByteString]
-        .prepend(Source(handshake)
-        .mapAsync[Command](1)(_._2.future)
-        .map { cmd =>
-          log(s"Sending command: ${cmd.cmd}")
-          ByteString(cmd.command)
-        })
+        .prepend(
+          Source(handshake)
+          .mapAsync[Command](1)(_._2.future)
+          .map { cmd =>
+            log(s"Sending command: ${cmd.cmd}")
+            ByteString(cmd.command)
+          }
+        )
     
     // Records in-bound from the server.
     val flow = Flow[ByteString]
@@ -114,35 +152,35 @@ object Main extends App {
               (record.length, Some(record.decodeString("ascii")), record)
             } catch {
               case cause: Throwable => {
-                println(s"Error parsing non data record: $cause")
-                (record.length, None, record)
+                log(s"Error parsing non data record: $cause")
+                cause.printStackTrace()
+                (record.length, Some("Short record."), record)
               }
             }
           } else if (record.length > 512) {
             // TODO: really need to handle sizes of 512, 520, or multiples of
             //       these, and split them up into sub-records.
-            (record.length, None, record)
+            (record.length, None, record.slice(0, 512))
           } else {
             (record.length, None, record)
           }
         }
+        .mapConcat[Either[String, SeedPoint]] {
+          case (_, None, record) => decomposeMiniSeed(record.toArray[Byte]).map(Right(_))
+          case (_, Some(decoded), _) => Left(decoded) :: Nil
+        }
     
     val sink = flow
         .toMat(Sink.foreach {
-          case (len, None, record) => {
-            // Make sure all of the commands sent sequentially
-            log(s"Received $len byte record\n$record")
-            nextCommand(None)
-          }
-          case (len, Some(decoded), raw) => {
+          case Right((network, station, location, channel, rate, timestamp, displacement)) =>
+            log(s"$network-$station $location-$channel $rate : [${formatTime(timestamp)}] $displacement")
+          case Left(decoded) =>
             if (decoded startsWith "SLINFO") {
               // Process the feed record
               log(s"Received info record")
             } else if (decoded startsWith "SL") {
               // Process the feed record
               log(s"Processing record ${decoded.substring(2, 8)}")
-              val recordSummary = if (len <= 40) s":\n$raw\n$decoded" else ""
-              log(s"Received $len byte record${recordSummary}")
             } else if (decoded startsWith "ERROR") {
               // Handle an error with handshake commands
               log("Command rejected [ERROR]")
@@ -153,20 +191,21 @@ object Main extends App {
               nextCommand(None)
             } else {
               // Make sure all of the commands sent sequentially
-              val recordSummary = if (len <= 256) s":\n$decoded" else ""
-              log(s"Received $len byte response$recordSummary")
+              log(s"Received response:\n$decoded")
               nextCommand(None)
             }
-          }
         })((_, end) => end)
         
     val connection = Tcp().outgoingConnection("rtserve.iris.washington.edu", 18000)
     
-    val (start, end) = connection.runWith(source, sink)
+    val (_, end) = connection.runWith(source, sink)
     
     end.andThen {
       case Success(_) => log("Stream ended normally.")
-      case Failure(error) => log(s"Stream ended in error: $error")
+      case Failure(error) => {
+        log(s"Stream ended in error: $error")
+        error.printStackTrace()
+      }
     }
     
     log("Not sure if done, or just in different thread...")

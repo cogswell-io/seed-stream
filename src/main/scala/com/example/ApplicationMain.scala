@@ -2,7 +2,8 @@ package com.example
 
 import akka.actor.ActorSystem
 
-object ApplicationMain extends App {
+//object ApplicationMain extends App {
+object ApplicationMain {
   val system = ActorSystem("MyActorSystem")
   val pingActor = system.actorOf(PingActor.props, "pingActor")
   pingActor ! PingActor.Initialize
