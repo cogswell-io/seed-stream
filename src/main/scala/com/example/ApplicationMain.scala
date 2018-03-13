@@ -9,5 +9,5 @@ object ApplicationMain {
   pingActor ! PingActor.Initialize
   // This example app will ping pong 3 times and thereafter terminate the ActorSystem - 
   // see counter logic in PingActor
-  system.awaitTermination()
+  system.getWhenTerminated
 }

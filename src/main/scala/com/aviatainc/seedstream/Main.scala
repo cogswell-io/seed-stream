@@ -65,7 +65,7 @@ object Main extends App {
       val timestamp = cal.getTimeInMillis
       val rate = record.getRate
       val step = (1000 / rate).toLong
-      log(s"${new String(rawRecord.slice(0, 32))} : [$timestamp] $rate")
+      //log(s"${new String(rawRecord.slice(0, 32))} : [$timestamp] $rate")
       record.decomp.toList.zipWithIndex.map { case (displacement, index) =>
         (network, station, location, channel, rate, timestamp + (step * index), displacement)
       }
@@ -169,7 +169,12 @@ object Main extends App {
           case (_, None, record) => decomposeMiniSeed(record.toArray[Byte]).map(Right(_))
           case (_, Some(decoded), _) => Left(decoded) :: Nil
         }
-    
+        .filter {
+          case Right(("IU", _, _, _, _, _, _)) => true
+          case Left(_) => true
+          case _ => false
+        }
+
     val sink = flow
         .toMat(Sink.foreach {
           case Right((network, station, location, channel, rate, timestamp, displacement)) =>
