@@ -53,7 +53,6 @@ object Main extends App {
   type SeedPoint = (Network, Station, Sensor, Channel, Rate, Timestamp, Displacement)
   
   def decomposeMiniSeed(rawRecord: Array[Byte]): List[SeedPoint] = {
-    // TODO: decompose
     try {
       val record = new MiniSeed(rawRecord)
       val seedName = record.getSeedName
@@ -166,12 +165,12 @@ object Main extends App {
           }
         }
         .mapConcat[Either[String, SeedPoint]] {
-          case (_, None, record) => decomposeMiniSeed(record.toArray[Byte]).map(Right(_))
           case (_, Some(decoded), _) => Left(decoded) :: Nil
+          case (_, None, record) => decomposeMiniSeed(record.toArray[Byte]).map(Right(_))
         }
         .filter {
-          case Right(("IU", _, _, _, _, _, _)) => true
           case Left(_) => true
+          case Right(("IC", _, _, _, _, _, _)) => true
           case _ => false
         }
 
