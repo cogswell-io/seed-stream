@@ -4,7 +4,7 @@ import javax.xml.bind.DatatypeConverter
 
 object Utils {
   def hex2Bin(hex: String): Array[Byte] = DatatypeConverter.parseHexBinary(hex)
-  def bin2Hex(bin: Array[Byte]): String = DatatypeConverter.printHexBinary(bin)
+  def bin2Hex(bin: Array[Byte]): String = DatatypeConverter.printHexBinary(bin).toLowerCase
 
   def b642Bin(b64: String): Array[Byte] = DatatypeConverter.parseBase64Binary(b64)
   def bin2B64(bin: Array[Byte]): String = DatatypeConverter.printBase64Binary(bin)

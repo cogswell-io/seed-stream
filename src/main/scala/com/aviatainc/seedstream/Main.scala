@@ -190,12 +190,12 @@ object Main extends App {
               log("Command rejected [ERROR]")
               nextCommand(Some(new Exception("Server rejected command.")))
             } else if (decoded startsWith "OK") {
-              // Make sure all of the commands sent sequentially
+              // Make sure all of the commands are sent sequentially
               log("Command accepted [OK]")
               nextCommand(None)
             } else {
-              // Make sure all of the commands sent sequentially
-              log(s"Received response:\n$decoded")
+              // Make sure all of the commands are sent sequentially
+              log(s"Received response:\n${Utils.bin2Hex(decoded.getBytes)}")
               nextCommand(None)
             }
         })((_, end) => end)
